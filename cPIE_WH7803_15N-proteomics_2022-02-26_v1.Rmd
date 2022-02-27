@@ -1,0 +1,1523 @@
+---
+title: "Classified Peptide Isotope Enrichment (cPIE) v1.0: Analysis of WH7803 15N series results from ProteomeDiscoverer/SEQUEST"
+author: "A.E. Zimmerman"
+date: \`r format(Sys.Date(), "%Y %m %d")`\
+output: html_document
+---
+
+### Summary
+The purpose of these scripts is to calculate peptide level isotope enrichment (as atom% 15N, i.e. relative isotope abundance) in metaproteomics data generated with ProteomeDiscoverer/SequestHT and Percolator or from MSFragger+Philosopher searches.   
+
+Data processing involves using a pipeline of modified functions from the ProteinTurnover package to estimate isotopologue relative abundance for each observed peptide then correcting these values for tracer purity and natural abundance isotopes using the IsoCorrectoR package. Also includes code for some visualization.  
+
+This analytical pipeline requires two pieces of information for every sample to be processed: raw MS1 data in mzXML format, FDR validated tabular search results that include information about protein ID, peptide sequence, retention time, charge state, confidence, and sample information. All other information is calculated within the following scripts (e.g., peptide mass).  
+  
+Peptide annotation (function and taxonomy) must be executed separately.  
+Aggregation of peptides to the most likely parent protein sequence is not included here.  
+
+
+*NOTE: This is the most current version of analysis*  
+*NOTE: cPIE Version 2.1 lives on the Waldbauer Lab PC at the University of Chicago.* 
+*NOTE: This file originated from HOT311_Expt2_proteomics_15N-isotope_2020-10-06_v25.Rmd on 15Apr2021.*  
+
+
+ProteinTurnover citation: Fan K.T., A.K. Rendahl, W.P. Chen, D.M. Freund, W.M. Gray , J.D. Cohen, A.D. Hegeman. 2016. “Proteome scale-protein turnover analysis using high resolution mass spectrometric data from stable-isotope labeled plants.” Journal of Proteome Research, 15, 851; DOI: 10.1021/acs.jproteome.5b00772.  
+https://pubs.acs.org/doi/suppl/10.1021/acs.jproteome.5b00772/suppl_file/pr5b00772_si_002.txt  
+  
+IsoCorrectoR citation:  
+Heinrich P., C. Kohler, L. Ellmann, P. Kuerner, R. Spang, P.J. Oefner, K. Dettmer. 2018. “Correcting for natural isotope abundance and tracer impurity in MS-, MS/MS- and high-resolution-multiple-tracer-data from stable isotope labeling experiments with IsoCorrectoR.” Scientific Reports, 8(1); DOI: 10.18129/B9.bioc.IsoCorrectoR.  
+https://genomics.ur.de/files/IsoCorrectoR/  
+
+
+***
+<br/>
+
+
+*Previous developments:*  
+Scripts adapted to run with MSFragger (v3.2) search results validated with PeptideProphet+Filter+Report as implemented in Philosopher (v3.4.13).  
+Filter data using 'algorithm indepdent' classifier model trained and tested on WH7803 data.  
+
+Reformat output from ProteomeDiscoverer (SequestHT search + Percolator) to look like Scaffold output (e.g., format required for ProteinTurnover functions).  
+Modify amino acid table to include carbox as fixed modification and oxidized methionine (M) as variable modification.  
+Modify ProteinTurnver 'makeSequences' function to reference modified amino acid table.  
+Modify ProteinTurnover 'makeRelAb' function and dependencies to return regression R-squared value with datatable relAb$data along with RelAb and proportion estimations. 
+Change all peptides sequences so that isoleucine (I) residues become leucine (L) residues (indistinguishable from spectra).  
+Modify calculation of mz within ProteinTurnover function getCount() called by addEICs().  
+Write function to calculate peptide monoisotopic mass from sequence.  
+Write function to return MS1 intensity counts for each peptide.  
+
+  
+
+
+***
+
+### Install and load packages 
+
+Note: Must install ProteinTurnover from local source to reflect modifications to code.  
+Note: Versions listed below from original implementation of cPIE pipeline.  
+Note: During install, DON'T update all associated packages.  
+  
+```{r package_install, eval = FALSE}
+
+install.packages("tidyverse")
+install.packages("ggplot2")
+install.packages("Hmisc")
+install.packages("viridis")
+install.packages("viridisLite")
+install.packages("R2HTML")
+## versions need to be confirmed ##
+install.packages("ROCR")
+install.packages("ggrepel")
+install.packages("colortools")
+install.packages("GGally")
+install.packages("ggsci")
+install.packages("mefa")
+install.packages("factoextra")
+install.packages("dendextend")
+install.packages("metRology")
+install.packages("NbClust")
+install.packages("pals")
+
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+
+## xcms v3.10.1 [3.12.0 installed here]
+BiocManager::install("xcms")
+## If scripts DON'T work, change bioconductor version 3.11 instead of 3.12 (current)  
+#BiocManager::install(pkgs = "xcms", version = "3.11")
+## Dependencies: MSnbase (v2.14.2)
+## Imports: mzR (v2.22.0), BiocGenerics (v0.34.0), ProtGenerics (v1.20.0), MassSpecWavelet (v1.54.0), S4Vectors (v0.26.1), robustbase (0.93-6), IRanges (v2.22.2), SummarizedExperiment (v1.18.2)
+
+## MSnbase v2.14.2 [2.16.1 installed here]
+BiocManager::install("MSnbase")
+## Dependencies: overlap with xcms
+## Imports: preprocessCore (v1.50.0), vsn (v3.56.0), impute (v1.62.0), pcaMethods (v1.80.0), MALDIquant (v1.19.3), mzID (v1.26.0), XML (v3.99-0.5), scales (v1.1.1), MASS (v7.3-53), Rcpp (NOTE: v1.0.4.6)
+
+## multtest v2.44.0 [2.46.0 installed here]
+BiocManager::install("multtest")
+
+## If 1.0.5 doesn't work, revert to version 1.0.4.6 instead (incompatibility issue with mzR or mzID)
+library(devtools)
+install_version("Rcpp", version = "1.0.5", repos = "http://cran.us.r-project.org")
+
+packageVersion("Rcpp")  # ‘1.0.5’
+packageVersion("mzR")  # ‘2.24.1’
+packageVersion("mzID")  # ‘1.28.0’
+packageVersion("MSnbase")  # ‘2.16.1’
+packageVersion("MASS")  # ‘7.3.53.1’
+
+
+## Download directory and install locally
+## Reinstall whenever modifications have been made to scripts
+## To build .tar.gz file in terminal: R CMD build ProteinTurnover-master/ 
+## NOTE: Must have R2HTML package installed to build properly
+install.packages("/Users/zimm824/R/cPIE_prototype/ref/ProteinTurnover_1.1.1.tar.gz", repos = NULL, type="source")
+## To convert in Windows: R CMD INSTALL --build ProteinTurnover_1.1.1.tar.gz
+## Windows version:
+#install.packages("./ProteinTurnover_1.1.1.zip", repos = NULL, type = "win.binary")
+
+
+## IsoCorrectoR requires R version 3.5+
+## IsoCorrectoR v1.6.2 [‘1.8.0’]
+BiocManager::install("IsoCorrectoR")
+## Windows version:
+#install.packages("./IsoCorrectoR_1.6.2.zip", repos = NULL, type = "win.binary")
+
+
+## Note: To remove package when appropriate
+#detach("package:ProteinTurnover", unload=TRUE)
+#remove.packages("ProteinTurnover") ## deletes files from library
+```
+  
+  
+```{r Load-libraries, message = FALSE, warning = TRUE}
+## sysdata.rda includes aaTable data frame of amino acid elemental composition
+## also 2 data examples and LocusNumbers
+#load("/Volumes/GoogleDrive/My Drive/UofC/R/proteomics_general_isotope/ProteinTurnover/ProteinTurnover-master/R/sysdata.rda")
+
+library(xcms)
+#library("MSnbase") # loaded by xcms
+
+library(tidyverse)
+library(ggplot2)
+library(purrr)
+library(Hmisc)
+library(viridisLite)
+library(viridis)
+
+library(ProteinTurnover)
+library(IsoCorrectoR)
+
+## Still need to check/confirm versions
+library(ROCR)
+library(Biobase)
+library(seqinr)
+library(ggrepel)
+library(colortools)
+library(gridExtra)
+#library(cowplot)
+#library(ggpubr)
+library(vegan)
+library(GGally)
+library(ggsci)
+library(mefa)
+library(cluster)
+library(factoextra)
+library(dendextend)
+library(broom)
+library(metRology)
+library(NbClust)
+library(scales)
+library(pals)
+
+```
+
+***
+
+<br/>
+
+### Pre-process Search Results  
+  
+ProteinTurnover was written to work with proteomics data generated by Scaffold.  
+The following section reformats PSM level output from either SequestHT/Percolator or MSFragger/Philosopher appropriately.  
+  
+<br/>
+  
+
+#### Read in the PSM results (individual files)    
+  
+*NOTE: Update directory path as appropriate for data*  
+  
+Search results in _PSM.txt format from Proteome Discoverer (SequestHR/Percolator).  
+Search parameters: allowed variable modifications (15N, max 20 per peptide), searched using target-decoy fasta database.  
+
+SequestHT/Percolator file name format = 7803_15NO3_0,1,2,5,10,20,50,100_1_AEZ_PSMs.txt  
+Note: Individual file per sample.  
+  
+```{r read_PSMs_Sequest, include=FALSE, eval=FALSE}
+## set environment wd and path for this chunk
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/ProteomeDiscoverer")
+dirpath = "./PSMs"
+
+# read tsv data into a list, one entry for each file
+files <- dir(dirpath, pattern="_PSMs.txt")
+
+sample_list <- list()
+
+for(i in 1:length(files) ) {
+  shortname <- gsub("^7803_15NO3_0,1,2,5,10,20,50,100_([0-9]+)_AEZ_PSMs.txt", "\\1", files[i])
+  sample_list[[i]] <- read.table(file=file.path(dirpath, files[i]), sep = "\t",
+                                  header=TRUE, stringsAsFactors = FALSE,
+                                  quote = "\"", fill = FALSE, na.strings = "") %>% 
+    dplyr::select(Confidence, PSM.Ambiguity, Annotated.Sequence, Modifications, Protein.Accessions, Charge, MHplus.in.Da, RT.in.min, Spectrum.File, XCorr, Percolator.q.Value, Number.of.Missed.Cleavages) %>%
+    setNames(c("Confidence", "PSM_Amb", "Annot_Sequence", "Seq_Mods", "Read_IDs", "Charge", "MHplus_Da", "RT_min", "File", "XCorr", "Perc_qVal", "Missed_Cleavages")) %>% 
+    mutate(Expt = "7803_15NO3_0,1,2,5,10,20,50,100", 
+           Sample = as.character(shortname),
+           Probability = as.numeric(100-Perc_qVal))
+}
+
+## combine all files into one long-format matrix: each row is an observation of a peptide in a given sample
+psm_df <- bind_rows(sample_list) %>%
+  mutate(TrmtPct = as.numeric(plyr::revalue(Sample, c("1"="0", "2"="1", "3"="2", "4"="5", "5"="10", "6"="20", "7"="50", "8"="100"))))
+```
+  
+  
+<br/>
+  
+  
+#### Re-format the PSM results
+  
+*Reminder: Format needs to match Scaffold-style output for ProteinTurnover analysis.*  
+Replace all isoleucine (I) residues with leucine (L) residues.  
+Use peptide monoisotopic mass values calculated manually below instead of mass output by ProteomeDiscoverer.  
+```{r Format-long-matrix_MSFragger}
+## Make a generic protein ID so that all obs of a distinct peptide sequences will get aggregated
+## Change oxidized Met residues from "M[147]" to "m"
+## Then ignore all other variable modifications for now
+## Change all isoleucines to leucines
+report <- psm_df %>%
+  mutate(ID = "prot", 
+         Sequence = if_else(!is.na(Seq_Mods), gsub("M\\[147\\]","m", Seq_Mods), Seq_Mods)) %>%
+  mutate(Sequence = if_else(!is.na(Sequence), gsub("\\[[0-9]+\\]", "", Sequence), Peptide)) %>%
+  mutate(Sequence = str_replace_all(Sequence, "I", "L"))
+
+## ProteinTurnover will throw an error for 'contains unknown elements' so eliminate peptides with X residues
+report_Scaff <- report %>%
+#  dplyr::filter(PSM_Amb != "Rejected") %>%  # Should not be necessary
+  dplyr::filter(stringr::str_detect(Sequence, 'X|x', negate = TRUE))
+```
+  
+  
+```{r Format-long-matrix_Sequest}
+## object v2 == lower-case alphabet missing m (v2 should also exclude "c" if cysteine modification was set as a variable modification in the search)
+## Use 'Character Translation' to make all amino acid residues upper case except m,c
+## Modified 17 Apr 2020: Make all 'c' residues upper case (static modification in search parameters)
+v2 <- gsub("[m]", "", paste(letters, collapse="")) 
+
+## Make a generic protein ID so that all obs of a distinct peptide sequence get aggregated
+report <- psm_df %>%
+  mutate(ID = "prot", 
+         Sequence = chartr(v2, toupper(v2), Annot_Sequence),
+         Sequence = str_replace_all(Sequence, "I", "L"))
+
+## ProteinTurnover will throw an error for 'contains unknown elements' so eliminate peptides with X residues
+report_Scaff <- report %>%
+  dplyr::filter(PSM_Amb != "Rejected") %>%
+  mutate(Peptide_Mass = MHplus_Da-1.007277) %>%
+  dplyr::filter(stringr::str_detect(Sequence, 'X|x', negate = TRUE))
+```
+  
+  
+  
+  
+***
+  
+<br/>
+  
+***
+  
+### Generate IsoCorrectoR Molecules.csv file  
+  
+#### Make list of distinct peptide sequences
+Note: Should only have to do this once for ALL samples if all samples are included in the report_Scaff object (treatments may need to be split up for relative abundance estimation).
+*Update 4 May 2020: Use only unique peptide sequences, ignore multiple charge states.*  
+```{r}
+## may be unnecessary!
+metab <- report_Scaff %>%
+  dplyr::select(Sequence) %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(Sequence)
+```
+
+<br/>
+
+#### Read amino acid element table
+  
+Note: This table has been modified from the original ProteinTurnover aaTable (Table S4 from the Fan et al., 2016). The 'MonoWt' for cysteine residue "C" has been changed to add 73.01638 and the number of each element has been changed to reflect the static 'CarbamOxC' (carbamidomethylation) modification settings in the peptide search.  
+Note: This table was modified again on 29 May 2020 so that the mass of oxidized methionine is included separately from un-oxidized methionine and reflects the complete mass of the residue (not just the delta value).  
+
+```{r}
+## set environment wd and path for this chunk
+setwd("/Users/zimm824/R/cPIE_prototype/ref")
+
+## mod_aaTable is modified version of mod_aaTablele (Table S4)
+## Revised 17 Apr 2020 to make all Cys residues modified-Cys (static modification in Sequest HT search)
+mod_aaTable <- read.table(file = "./aaTable_AEZ_CarbamOxC.txt", header = TRUE, sep = "\t", quote = "", fill = FALSE, na.strings = "", stringsAsFactors = FALSE) %>%
+  mutate(AvgWt = as.numeric(AvgWt))
+
+## Default amino acid table from ProteinTurnover
+#aaTable <- ProteinTurnover:::aaTable
+#devtools::use_data(aaTable, internal = TRUE)
+```
+
+<br/>
+
+#### Declare function to generate charge-adjusted elemental formulas
+
+Note: The elemental formulas generated by this function are different from the formulas generated by the 'makeSequences()' function in that they do not account for natural abundance isotopes contributed by "m" and "c" residues.  
+
+Note: Modified formula to calculate mass manually created 29 May 2020. 
+```{r}
+## Note: When N is isotope of interest, the order of ions is: "N" "C" "H" "O" "S"
+getFormulaMass <- function(sequence) {
+  isotope <- "N" # p$isotope
+  ions <- c("C","H","N","O","S","nN")
+  ions <- ions[order(ions!=isotope)]
+  sequence <- strsplit(sequence, '')[[1]]
+  mm <- match(sequence, mod_aaTable$Code)
+  if(any(is.na(mm))){
+        stop("contains unknown elements")
+    }    
+  H2O <- 18.01056
+  Ms <- mod_aaTable[mm, "MonoWt"]
+  Ms <- sum(Ms) + H2O
+  El <- mod_aaTable[mm, ions]
+  El <- colSums(El)
+  
+  El <- paste0(El, collapse = ", ")  ## skip line to print elements with counts
+  MassFormula <- paste(Ms, El, sep = "; ")
+  return(MassFormula)
+}
+```
+
+
+<br/>
+
+#### Generate elemental formulas and monoisotopic masses
+
+**Caution:** Below assumes that the elements are ordered N, C, H, O, S when returned by the function.  
+Calculates monoisotopic mass (neutral molecule).  
+Checks for tracer elements that should not be labeled (e.g., N in cysteine residues).  
+```{r}
+## Execute function using experiment data
+## metab is a one-column df of unique peptide sequences
+## Sequence should preserve oxidized Met residues as "m"
+metab_mod <- metab %>%
+  mutate(Ms = as.character(lapply(Sequence, getFormulaMass))) %>%
+  separate(., Ms, c("Mono_Mass", "el"), sep="; ", remove = TRUE, convert = TRUE, 
+           extra = "warn", fill = "warn") %>%
+  separate(., el, c("N", "C", "H", "O", "S", "nN"), sep=", ", remove = TRUE, 
+           convert = TRUE, extra = "warn", fill = "warn") %>%
+#  mutate(H = H + Charge) %>% # to incorporate charge, otherwise, neutral mass
+  mutate(labeled = N - nN) %>% 
+  mutate(formula = ifelse(S == 0, paste0("C", C, "H", H, "O", O, "N", N), 
+                          paste0("C", C, "H", H, "O", O, "N", N, "S", S))) %>%
+  mutate(product = paste0(formula, "LabN", labeled), loss = NA)
+  
+
+## write output to file  ##################
+## should be put into current working directory
+metab_mod %>%
+  select(Sequence, product, loss) %>%
+  setNames(c("Molecule", "MS ion or MS/MS product ion", "MS/MS neutral loss")) %>%
+  write.csv(x = ., file = "/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/MoleculeFile.csv", quote = FALSE, row.names = FALSE, na = "")
+```
+
+
+
+<br/>
+
+#### Add correct masses to Scaffold-style reports 
+  
+*Reminder: Format needs to match Scaffold-style output for ProteinTurnover analysis*
+Use peptide monoisotopic mass values calculated manually with function getFormulaMass instead of mass output from search.  
+
+NOTE: Scaffold-style output must have the following headings: ID, Sequence, RT_min, Mono_Mass, Charge, TimePoint, Probability.  
+
+```{r}
+## NOTE: Must be in directory where raw data is kept.
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data")
+
+## Change indexing variable to be called TimePoint
+## To use bottle num as an index, need to rename it TimePoint so its recognized
+report_Scaff_mod <- metab_mod %>%
+  select(Sequence, Mono_Mass) %>%
+  dplyr::left_join(report_Scaff, ., by = "Sequence") %>% 
+  mutate(TimePoint = Sample)
+
+## write output to file ##################
+## should be exported to directory where mzXML data is stored
+report_Scaff_mod %>%
+  write.csv(., file = paste("./MS_mzXML/WH7803_PD_report_Scaff_",format(Sys.time(), "%Y-%m-%d"),".csv", sep = ""), row.names = FALSE)
+
+## Also send to R output directory
+report_Scaff_mod %>%
+  write.csv(., file = paste("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/WH7803_PD_report_Scaff_",format(Sys.time(), "%Y-%m-%d"),".csv", sep = ""), row.names = FALSE)
+```
+
+
+
+***
+***
+
+<br/>
+
+### Isotopologue Analysis using ProteinTurnover
+
+#### Set the parameters 
+
+*NOTE: extra.channels must be set to 1 to account for possible full isotopic label.*  
+NOTE: File order must match times order.  
+```{r ProteinTurnover_params1}
+### Set up list to hold parameters (p) for this run.
+p <- list()
+
+#p$scaffoldfile <- "soluble-FDR-Scaffold spectrum report.csv"
+p$scaffoldfile <- "WH7803_PD_report_Scaff_2021-06-09.csv"
+
+## Set 'times' as index of unique sample identifiers
+## Set corresponding file names:
+#* Set 'times' as the labeling time points OR index of treatments (e.g., 1, 2, 3, etc.).
+#* set filenames of mzXML files that correspond to the above time points OR unique identifiers.
+#* set filenames of rds (R data files) that correspond to the above 'times'.
+p$times <- c(1,2,3,4,5,6,7,8)
+
+p$rawfiles <- c("7803_15NO3_0,1,2,5,10,20,50,100_1.mzXML",
+               "7803_15NO3_0,1,2,5,10,20,50,100_2.mzXML",
+               "7803_15NO3_0,1,2,5,10,20,50,100_3.mzXML", 
+               "7803_15NO3_0,1,2,5,10,20,50,100_4.mzXML", 
+               "7803_15NO3_0,1,2,5,10,20,50,100_5.mzXML", 
+               "7803_15NO3_0,1,2,5,10,20,50,100_6.mzXML", 
+               "7803_15NO3_0,1,2,5,10,20,50,100_7.mzXML",
+               "7803_15NO3_0,1,2,5,10,20,50,100_8.mzXML") 
+
+p$rdsfiles <- c("7803_15NO3_0,1,2,5,10,20,50,100_1.rds",
+                "7803_15NO3_0,1,2,5,10,20,50,100_2.rds",
+                "7803_15NO3_0,1,2,5,10,20,50,100_3.rds", 
+                "7803_15NO3_0,1,2,5,10,20,50,100_4.rds", 
+                "7803_15NO3_0,1,2,5,10,20,50,100_5.rds", 
+                "7803_15NO3_0,1,2,5,10,20,50,100_6.rds", 
+                "7803_15NO3_0,1,2,5,10,20,50,100_7.rds", 
+                "7803_15NO3_0,1,2,5,10,20,50,100_8.rds")
+
+```
+
+```{r ProteinTurnover_params2}
+### Set the number of cores to use.
+p$num.cores <- 2
+
+## Set directories and scaffold file name. 
+#* Set the data file directory.
+#* Set the directory that result files should be stored in.
+#* Set scaffold report file, which should be stored in the data directory.
+
+p$dir.data <- "/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/MS_mzXML/"
+p$dir.results <- "/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/"
+
+## Create results directory
+#This will give warning if already exists.
+dir.create(p$dir.results)
+
+## Set parameters for use in the fit.
+#* The confidence level is based on the peptide identification confidence value.
+#* m/z windows set as plus or minus 0.005 (== 5 ppm)
+#* Retention time window set as plus or minus 30 sec
+#* Add extra isotopic channels
+p$isotope <- "N"
+p$confidence.level <- 60  
+p$time.zero <- 0 # irrelevant
+p$time.unit <- "Hour" # irrelevant
+p$mz.tol <- 0.000010 # default = 0.010
+p$rt.tol <- 30 # default (+/- 30 seconds)
+p$extra.channels <- 1 # +1 extra accounts for full label
+
+
+## Set parameter to get the relative abundance from EIC (relAbForTimes).
+# Available options are ("lm", "rlm", "lqs", "rq", "sum", "log") "tot"" added 8 May 2020
+# "tot" returns total, non-normalized counts
+# default is "lm"
+p$regression.model <- "lm"
+
+## Set up parameters for fitting. Options are "incorporation" for stable isotope label incorporation and "dilution" for label dilution
+p$isotope.method <- "incorporation"
+
+
+###### cPIE doesn't require any ProteinTurnover functions below here ### 
+
+### Set up betabinomial options for the "M" parameter in Eq.(5).
+#Available options are ("none", "one", "many"). If choose "none", then the binomial model will be used
+#p$M.model <- "many" # default is one
+
+### Set the alpha parameters, Eq.(6).
+#For incorporation, available options are ("many", "k", "kplateau", or "log2k").
+#For dilution, available options are ("one", "many").
+# "many" always means the algorithm will fit a different value of that parameter for each time point.
+#p$alpha.model <- "many"     #make log2 value of turnover rate k (default)
+
+### This is passed to the "nab" parameter of pepcurve.
+#p$plim <- NA
+```
+
+
+<br/>
+
+#### Convert raw mzXML files to Rdata files  
+
+**Required.** This speeds up the steps below; it is time consuming but only need to be done once for each sample. Takes 5-10 minutes per sample.  
+
+```{r ProteinTurnover_XML, eval = FALSE}
+rawToRDS(p$dir.data, p$rawfiles, p$rdsfiles)
+
+```
+
+
+
+<br/>
+
+#### Read in search data needed by ProteinTurnover  
+
+Read the Scaffold-formatted PSM data.  
+
+```{r ProteinTurnover_read}
+#dat <- readScaffoldFile(p$scaffoldfile, times=p$times, dir=p$dir.data)
+dat <- readScaffoldFile(p$scaffoldfile, times=p$times, dir=p$dir.data)
+```
+
+
+<br/>
+
+#### Prepare the data structure for each protein-peptide sequence  
+
+```{r ProteinTurnover_format}
+#seqs <- makeSequences(dat, isotope=p$isotope, confidence=p$confidence.level, 
+#                      time.zero=p$time.zero, time.unit=p$time.unit, mz.tol=p$mz.tol, 
+#                      rt.tol=p$rt.tol, extra.channels=p$extra.channels)
+
+seqs <- makeSequences(dat, isotope=p$isotope, confidence=p$confidence.level, time.zero=p$time.zero, time.unit=p$time.unit, mz.tol=p$mz.tol, rt.tol=p$rt.tol, extra.channels=p$extra.channels)
+
+```
+
+
+<br/> 
+
+#### Add EIC data for each protein-peptide sequence  
+
+Note: This takes several minutes for each 'time' (unique index).  
+
+```{r ProteinTurnover_EIC}
+#seqs <- addEICs(seqs, files=p$rawfiles, type="mzXML", times=p$times, dir=p$dir.data)
+seqs.EIC <- addEICs(seqs, files=p$rdsfiles, type="rds", times=p$times, dir=p$dir.data)
+
+### Save what we've done so far.
+#save(dat, seqs, p, file=file.path(p$dir.results, "eicdata.Rdata"))
+```
+
+
+<br/>
+
+#### Estimate isotopologue relative abundance for each protein-peptide sequence  
+
+Get the distribution abundance proportion and fit for each sequence.  
+mclapply.progress is just like lapply except works in parallel and shows progress.  
+makeRelAb is a wrapper for **relAbForTimes**, to handle any error.  
+makeFit is a wrapper for **pepfit**, to handle any error.  
+
+<br/>
+
+The algorithm chooses parameters that make the smallest difference between the observed proportion for each isotopic channel to the predicted proportion.  
+  
+@param time Boolean, set FALSE to not measure elapsed time  
+@param useRelAb Use relative abundance instead of proportions (useRelAb=TRUE)  
+
+Across time points, the proportionality constant differs, so using relative abundance gives more weight to the time points with higher total values of relative abundance. Using proportions will treat each time point equally. This only applies to makeFit.   
+
+```{r ProteinTurnover_fits}
+### Reload what we've done so far. Skip these two command lines if users just run the above code.
+#dir.results <- "Turnover"  
+#load(file.path(dir.results, "eicdata.Rdata"))
+# Skipped because didn't close R.
+
+### Set up multiple cores.
+#if(!is.null(p$num.cores)) { options(mc.cores=p$num.cores) }
+
+## Should apply function makeRelAb, makeFit, and list to each element of seqs.
+#seqs <- mclapply.progress(seqs.EICs, function(seq) {
+#  relAb <- makeRelAb(seq, regression.model=p$regression.model)
+##  fit <- makeFit(seq=seq, relAb=relAb, M=p$M.model, alpha=p$alpha.model, se=TRUE, isotope.method=p$isotope.method, useRelAb=TRUE)
+#  list(seq=seq, relAb=relAb, fit=fit)   
+#})
+
+## updated to add name (i.e., treatment) variable to list
+seqs <- mclapply.progress(seqs.EIC, function(seq) {
+  relAb <- makeRelAb(seq, regression.model=p$regression.model)
+  list(seq=seq, relAb=relAb)    
+  })
+
+### Save results so far.
+#save(dat, seqs, p, file=file.path(p$dir.results, "fit-log2k.Rdata"))
+```
+
+
+<br/>
+
+#### Generate plots to manually check data  
+
+```{r, eval = FALSE}
+## Put the index number of whichever peptide you want to explore, eg. No.200 peptide in the output file.
+s <- seqs[[200]]
+
+## Make eic plots:
+plot(s$relAb)
+
+## Make regression plots:
+regressionPlot(s$relAb)
+```
+
+
+***
+
+<br/>
+
+***
+
+
+### Generate IsoCorrectoR data input file (MeasurementFile.csv)  
+
+#### Get isotopologue relative abundance data for each protein-peptide sequence   
+
+<br/>
+
+##### Declare function to extract "data" data.frame object from seqs object
+```{r}
+## x must be a list; returns a list
+getResults <- function(x) {
+  data_list <- vector("list", length(x))
+  for(i in 1:length(x) ) {
+    peptide <- x[[i]]$seq$Sequence
+    if(inherits(x[[i]]$relAb, "error")) {
+ #     cat("ERROR: i equals", i, "which is peptide", peptide, "and had no EIC data.", "\n")
+      df <- data.frame(matrix(ncol=7, nrow=1, dimnames=list(NULL, c("TimePoint", "Channel", "RelAb", "RelAb.obs", "RelAb.se", "RelAb.Rsq", "proportion"))))
+      data_list[[i]] <- df %>% dplyr::mutate(peptide = peptide)
+      }
+    else {
+ #     cat("i equals", i, "which is peptide", peptide, "\n")
+      isotopdat = x[[i]]$relAb$data %>%
+        dplyr::mutate(peptide = peptide)
+      data_list[[i]] <- isotopdat
+    }
+  }
+  return(data_list)
+}
+```
+
+
+<br/>
+
+##### Execute function
+
+```{r}
+col_order <- c("Sample", "peptide", "channel", "relAb", "relAb.obs", "relAb.se", "relAb.Rsq", "proportion")
+```
+
+```{r}
+## Apply function to get and format data
+out <- getResults(seqs) %>%
+  bind_rows() %>%
+  setNames(c("Sample", "channel", "relAb", "relAb.obs", "relAb.se", "relAb.Rsq", "proportion", "peptide")) 
+
+out <- out[, col_order]
+
+ ## set environment wd and path for this chunk
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data")
+
+## write output to file  ##################
+write.table(out, file = paste("./output/ProteinTurnover_processed_output_",format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, sep = "\t")
+```
+
+
+
+<br/>
+
+##### Declare secondary function to extract intensity/count data from seqs object 
+
+```{r}
+## x must be a list; returns a list
+getCounts <- function(x) {
+  data_list <- vector("list", length(x))
+  for(i in 1:length(x) ) {
+    peptide <- x[[i]]$seq$Sequence
+    if(inherits(x[[i]]$relAb, "error")) {
+      df <- data.frame(matrix(ncol=6,nrow=1, dimnames=list(NULL, c("TimePoint", "Channel", "RT", "Count", "BaseCount", "use"))))
+      data_list[[i]] <- df %>% dplyr::mutate(peptide = peptide)
+      }
+    else {
+      isotopdat = x[[i]]$relAb$data.long %>%
+        dplyr::mutate(peptide = peptide)
+      data_list[[i]] <- isotopdat
+    }
+  }
+  return(data_list)
+}
+```
+
+
+##### Execute secondary function  
+
+```{r}
+## Apply function to get and format count data
+counts <- getCounts(seqs) %>%
+  bind_rows() %>%
+  setNames(c("Sample", "channel", "RT", "Count", "BaseCount", "use", "peptide")) 
+
+counts <- counts[, c("Sample", "peptide", "channel", "RT", "Count", "BaseCount", "use")]
+
+## set environment wd and path for this chunk
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data")
+
+## write output to file  ##################
+write.table(counts, file = paste("./output/ProteinTurnover_counts_",format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, sep = "\t")
+```
+
+<br/>
+
+
+
+
+<br/>
+
+##### Format data for IsoCorrector
+
+```{r}
+## set environment wd and path for this chunk
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data")
+
+out_mod <- out %>%
+  mutate(isotopologue = as.integer(channel), area = as.numeric(relAb)) %>%
+  select(peptide, isotopologue, Sample, area) %>%
+  spread(key = Sample, value = area, fill = NA)
+
+## write output to file  ##################
+## should be put into current working directory??????????
+out_mod %>%
+  unite("Measurements/Samples", peptide, isotopologue, sep = "_", remove = TRUE) %>%
+  write.csv(., file = paste("./output/WH7803_PD_out_mod_data_",format(Sys.time(), "%Y-%m-%d"),".csv", sep = ""), quote = FALSE, row.names = FALSE, na = "")
+```
+
+
+
+<br/>
+
+##### Subset molecule file for IsoCorrector (optional)
+
+Filter separate molecule files for subsets of data if necessary.    
+
+*Note: Cannot be completed until AFTER Protein Turnover has processed data and 'out' object has been generated.*
+```{r, eval = FALSE}
+## set environment wd and path for this chunk
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data")
+
+## write output to file  ##################
+## should be put into current working directory???????????
+metab_mod %>%
+  semi_join(., out_mod, by = c("Sequence" = "peptide")) %>%
+  select(Sequence, product, loss) %>%
+  setNames(c("Molecule", "MS ion or MS/MS product ion", "MS/MS neutral loss")) %>%
+  write.csv(x = ., file = "./output/MoleculeFile_subset.csv", quote = FALSE, row.names = FALSE, na = "")
+```
+
+
+<br/>
+
+
+***
+
+<br/>
+
+### Process data through IsoCorrector
+
+IsoCorrection() is the function that performs the correction for natural abundance isotopes.  
+Once the correction is finished, the function will write files with the corrected data (csv or xls) and a log file to the desired output directory.  
+
+The function requires at least the following parameters:  
+Path to a measurement file containing the uncorrected measurements  
+Path to an element information file  
+Path to a molecule information file  
+  
+IsoCorrection(MeasurementFile=NA, ElementFile=NA, MoleculeFile=NA, 
+              CorrectTracerImpurity=FALSE, CorrectTracerElementCore=TRUE, 
+              CalculateMeanEnrichment=TRUE, UltraHighRes=FALSE, 
+              DirOut='.', FileOut='result', FileOutFormat='csv', 
+              ReturnResultsObject=FALSE, CorrectAlsoMonoisotopic=FALSE, 
+              CalculationThreshold=10^-8, CalculationThreshold_UHR=8, 
+              verbose=FALSE, Testmode=FALSE)  
+              
+ReturnResultsObject: If TRUE, returns the correction results as a list in the current R-session in addition to writing the results to file. This is useful if the corrected data has to be processed directly in R.  
+--> This has never worked successfully! 
+
+**Save R data prior to runnings; IsoCorrectoR has a tendency to crash R!**  
+```{r}
+setwd("/Users/zimm824/R/WH7803_benchmark_R/output")
+
+IsoCorrection(MeasurementFile = "./WH7803_PD_out_mod_data_2021-06-09.csv", 
+              ElementFile = "./ElementFile_AEZ98.csv", 
+              MoleculeFile = "./MoleculeFile.csv",
+              CorrectTracerImpurity = TRUE, CorrectTracerElementCore = TRUE, 
+              CalculateMeanEnrichment = TRUE, UltraHighRes = FALSE, 
+              DirOut = '.', 
+              FileOut = 'result', 
+              FileOutFormat = 'csv', 
+              ReturnResultsObject = TRUE, CorrectAlsoMonoisotopic = FALSE, 
+              CalculationThreshold = 10^-10, 
+              CalculationThreshold_UHR = 8, 
+              verbose = TRUE, Testmode = FALSE)
+```
+
+
+
+<br/>
+
+
+***
+
+<br/>
+
+
+### Combine and post-process cPIE data  
+  
+  
+#### Read and calculate spectrum intensity/count data
+
+Use this information to handle oxidized methionine residue issue.
+**WARNING: These files are huge and R may run out of memory.**  
+
+```{r count_import}
+## Count data stored in object "counts"
+## Object unmodified when exported to file "ProteinTurnover_counts_YYYY-MM-DD.txt"
+
+## IF need to read data back into environment:
+#setwd("/Users/zimm824/Documents/Projects/EndoPopulus/R")
+#counts <- read.table(file = "./output/ProteinTurnover_counts_2021-04-18.txt", header = TRUE, sep = "\t", quote = "\"", na.strings = "NA", stringsAsFactors = FALSE)
+```
+
+
+
+Calculate a total intensity/count metric for each peptide sequence, across all isotopologue channels.  
+*counts_mod object should have SCAN-level count information*
+Aggregate intensity/count information to a 'Total' intensity/count value for each isotopologue/channel (i.e., across multiple scans/RTs) for each peptide sequence.  
+```{r}
+## Aggregate various scans (indexed by retention times) to the level of peptide*isotopologue (i.e., channel)
+## Rename peptide to Sequence (preserves variables Met oxidation) to match Scaffold report table
+## peptide should be all uppercase, Sequence may have lowercase 'm'
+counts_mod <- counts %>%
+  mutate(Sequence = peptide, peptide = NULL) %>%
+  group_by(Sequence, Sample, channel) %>%
+  dplyr::summarise(obs = n(), Total = sum(Count), check = sum(use), .groups = "keep") %>%
+  ungroup()
+```
+
+
+#### Read in processed relative abundance (ProteinTurnover) output
+
+Use channel-specific metrics like relative abundance R-squared values for quality control.   
+
+```{r PT_import}
+## Relative abundance data stored in object "out"
+## Object unmodified when exported to file "ProteinTurnover_processed_output_YYYY-MM-DD.txt"
+out_relab <- out %>% mutate(Sequence = peptide, peptide = NULL)
+
+## IF need to read data back into environment:
+#setwd("/Users/zimm824/Documents/Projects/EndoPopulus/R")
+#out_relab <- read.table(file = "./output/ProteinTurnover_processed_output_2021-04-18.txt", header = TRUE, sep = "\t", quote = "\"", na.strings = "NA", stringsAsFactors = FALSE) %>%
+#  mutate(Sequence = peptide, peptide = NULL)
+```
+
+
+#### Read in processed IsoCorrectoR data
+*NOTE: Update directory path as appropriate for data.* 
+*NOTE: Update sample (column) names as needed.* 
+
+**NOTE: Revise to read in data from multiple files/samples at once.**
+IsoCorrectoR adds a time stamp in the name of each directory that it creates, so each data directory is unique. 
+
+```{r isoR_data_in_Expt1}
+setwd("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/2021-06-09_194007")
+
+## samples
+isoR_enrich <- read.csv("./IsoCorrectoR_result_MeanEnrichment.csv", header = TRUE, sep = ",", quote = "\"", na.strings = "NA", col.names = c("Sequence", "Sample_1", "Sample_2", "Sample_3", "Sample_4", "Sample_5", "Sample_6", "Sample_7", "Sample_8"))
+
+isoR_resid <- read.csv("./IsoCorrectoR_result_Residuals.csv", header = TRUE, sep = ",", quote = "\"", na.strings = "NA", col.names = c("Sequence", "Sample_1", "Sample_2", "Sample_3", "Sample_4", "Sample_5", "Sample_6", "Sample_7", "Sample_8"))
+
+isoR_correct <- read.csv("./IsoCorrectoR_result_Corrected.csv", header = TRUE, sep = ",", quote = "\"", na.strings = "NA", col.names = c("Sequence", "Sample_1", "Sample_2", "Sample_3", "Sample_4", "Sample_5", "Sample_6", "Sample_7", "Sample_8"))
+
+```
+
+
+##### Generate long-format data
+
+```{r long_exp}
+## Manipulate data into long format
+isoR_enrich_long <- tidyr::pivot_longer(data = isoR_enrich, cols = starts_with("Sample_"), names_to = "Sample", values_to = "mean.enrichment") %>%
+  mutate(Sample = as.numeric(str_replace_all(Sample, "Sample_", "")))
+
+## These contain channel-specific data
+isoR_resid_long <- tidyr::pivot_longer(data = isoR_resid, cols = starts_with("Sample_"), names_to = "Sample", values_to = "residuals") %>%
+  mutate(Sample = as.numeric(str_replace_all(Sample, "Sample_", ""))) %>%
+  mutate(Sequence = as.character(Sequence), residuals.abs = abs(residuals)) %>%
+  separate(col = "Sequence", into = c("Sequence", "channel"), sep = "_", remove = TRUE, convert = TRUE, extra = "warn", fill = "warn")
+
+isoR_correct_long <- tidyr::pivot_longer(data = isoR_correct, cols = starts_with("Sample_"), names_to = "Sample", values_to = "Cor.relAb") %>%
+  mutate(Sample = as.numeric(str_replace_all(Sample, "Sample_", ""))) %>%
+  mutate(Sequence = as.character(Sequence)) %>%
+  separate(col = "Sequence", into = c("Sequence", "channel"), sep = "_", remove = TRUE, convert = TRUE, extra = "warn", fill = "warn")
+```
+
+
+
+<br/>
+
+##### Aggregate channel-level and peptide sequence-level data
+
+Combine all channel-specific metrics into one data object.  
+This includes: out_relab (relative abundance estimates), counts_mod (peptide-level counts), and isoR_resid_long (residuals)    
+NOTE: The 'Sequence' variable in these objects preserves variation in Met oxidation. 
+
+```{r}
+## Remember that out_relab and counts_mod contain isotopologue/channel-specific data (no longer scan-specific)
+channel_metrics <- left_join(out_relab, counts_mod, by = c("Sequence", "Sample", "channel")) %>%
+  left_join(., isoR_resid_long, by = c("Sequence", "Sample", "channel")) %>%
+  left_join(., isoR_correct_long, by = c("Sequence", "Sample", "channel"))
+```
+
+
+Now aggregate to peptide level.  
+Group by peptide sequence and treatment/sample.   
+Calculate the mean, weighted mean, max, and min values across all channels for each error metric.
+
+relAb.se (PT), relAb.Rsq (PT), and residuals (IsoCorrectoR)
+
+```{r}
+pep_metrics <- channel_metrics %>%
+  group_by(Sample, Sequence) %>%
+  dplyr::summarise(Num_channels = n(), Scans_per_channel = first(obs), 
+                   Intensity = sum(Total, na.rm = TRUE), 
+                   min.relAb.se = min(relAb.se, na.rm = TRUE), 
+                   max.relAb.se = max(relAb.se, na.rm = TRUE), 
+                   mean.relAb.se = mean(relAb.se, na.rm = TRUE), 
+                   wtmean.relAb.se = weighted.mean(relAb.se, Total, na.rm = TRUE), 
+                   min.relAb.Rsq = min(relAb.Rsq, na.rm = TRUE), 
+                   max.relAb.Rsq = max(relAb.Rsq, na.rm = TRUE), 
+                   mean.relAb.Rsq = mean(relAb.Rsq, na.rm = TRUE), 
+                   wtmean.relAb.Rsq = weighted.mean(relAb.Rsq, Total, na.rm = TRUE),
+                   min.residuals = min(residuals, na.rm = TRUE), 
+                   max.residuals = max(residuals, na.rm = TRUE), 
+                   mean.residuals = mean(residuals, na.rm = TRUE), 
+                   wtmean.residuals = weighted.mean(residuals, Total, na.rm = TRUE),
+                   min.residuals.abs = min(residuals.abs, na.rm = TRUE), 
+                   max.residuals.abs = max(residuals.abs, na.rm = TRUE), 
+                   mean.residuals.abs = mean(residuals.abs, na.rm = TRUE), 
+                   wtmean.residuals.abs = weighted.mean(residuals.abs, Total, na.rm = TRUE), 
+                   Total.Cor.relAb = sum(Cor.relAb, na.rm = TRUE),
+                   Total.Obs.relAb = sum(relAb, na.rm = TRUE), .groups = "keep") %>%
+  ungroup() %>%
+  mutate(TotalResidual = as.numeric(Total.Cor.relAb/Total.Obs.relAb)) %>%
+  mutate(TotalResidual.log = ifelse(TotalResidual == 0, NA, log10(TotalResidual))) %>% ## check for zeroes so don't produce -Inf
+  as.data.frame(.)
+```
+
+
+Join peptide-aggregated error estimates with mean.enrichment output  
+
+```{r}
+pep_metrics_enrich <- isoR_enrich_long %>%
+  left_join(pep_metrics, ., by = c("Sequence", "Sample"))
+```
+
+
+
+<br/>
+
+
+#### Combine with metadata  
+
+PSM-level report data objects (report, report_Scaff, and report_Scaff_mod) should be in environment.  
+Note that Sequest and MSFragger search results are associated with different error metrics, which then require different classifiers also trained on different search results.  
+  
+Use PSM level data to count spectra per peptide as an estimate of peptide abundance.    
+  
+```{r agg_PSM_MSFragger}
+## Aggregate PSM observations to peptide sequence level
+## Note that 'Sequence' preserves m/M variation in peptide sequence ('peptide' is all uppercase)
+report_Scaff_mod_derep <- report_Scaff_mod %>%
+  dplyr::select(Expt, Sample, Scan.Scan.Charge, Sequence, Mono_Mass, Charge, RT_min, Expect, PP_Prob) %>%
+  group_by(Expt, Sample, Sequence) %>%
+  dplyr::summarise(Num_spectra = n(), Mono_Mass = median(Mono_Mass), 
+                   min.Charge = min(Charge), max.Charge = max(Charge), 
+                   mean.Charge = mean(Charge), median.Charge = median(Charge), 
+                   min.RT_min = min(RT_min), max.RT_min = max(RT_min), 
+                   mean.RT_min = mean(RT_min), median.RT_min = median(RT_min), 
+                   min.Expect = min(Expect), max.Expect = max(Expect), 
+                   mean.Expect = mean(Expect), median.Expect = median(Expect),
+                   min.PP_Prob = min(PP_Prob), max.PP_Prob = max(PP_Prob), 
+                   mean.PP_Prob = mean(PP_Prob), median.PP_Prob = median(PP_Prob), 
+                   .groups = "keep") %>%
+  ungroup()
+```
+
+
+```{r agg_PSM_Sequest, eval=FALSE}
+## Aggregate PSM observations to peptide sequence level
+## Note that 'Sequence' preserves m/M variation in peptide sequence ('peptide' is all upper)
+report_Scaff_mod_derep <- report_Scaff_mod %>%
+#  mutate(treatment = paste(nitrogen, T, sep = "_")) %>%
+  dplyr::select(Expt, Sample, Sequence, Mono_Mass, Charge, RT_min, XCorr, Perc_qVal) %>%
+  group_by(Expt, Sample, Sequence) %>%
+  dplyr::summarise(Num_spectra = n(), Mono_Mass = median(Mono_Mass), 
+                   min.Charge = min(Charge), max.Charge = max(Charge), 
+                   mean.Charge = mean(Charge), median.Charge = median(Charge), 
+                   min.RT_min = min(RT_min), max.RT_min = max(RT_min), 
+                   mean.RT_min = mean(RT_min), median.RT_min = median(RT_min), 
+                   min.XCorr = min(XCorr), max.XCorr = max(XCorr), 
+                   mean.XCorr = mean(XCorr), median.XCorr = median(XCorr),
+                   min.Perc_qVal = min(Perc_qVal), max.Perc_qVal = max(Perc_qVal), 
+                   mean.Perc_qVal = mean(Perc_qVal), median.Perc_qVal = median(Perc_qVal), 
+                   .groups = "keep") %>%
+  ungroup()
+```
+
+
+Join IsoCorrectoR output (aggregated to peptide sequence level) and error estimates with PSM search metrics.
+
+```{r}
+metadat <- report_Scaff_mod_derep %>%
+  mutate(peptide = toupper(Sequence), Sample = as.numeric(Sample)) %>%
+  dplyr::select(Expt, Sample, Sequence, peptide, Num_spectra, Mono_Mass, mean.Charge, mean.RT_min, mean.XCorr, mean.Perc_qVal) %>%
+#  dplyr::select(Expt, Sample, Sequence, peptide, Num_spectra, Mono_Mass, mean.Charge, mean.RT_min, mean.Expect, mean.PP_Prob) %>%
+  distinct()
+
+
+## Add enrichment data
+## Combined in a way so that 0 mean enrichment means a peptide was observed in a specific sample
+pep_metrics_enrich_report <- metadat %>%
+  left_join(., pep_metrics_enrich, by = c("Sample", "Sequence"))
+
+## Check for missing data
+colSums(is.na(pep_metrics_enrich))
+colSums(is.na(report_Scaff_mod_derep))
+colSums(is.na(pep_metrics_enrich_report))
+
+# write output to file  ##################
+write.table(pep_metrics_enrich_report, file = paste("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/WH7803_PD_pep_metrics_enrich_report_", format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, col.name = TRUE, sep = "\t")
+
+
+## Export distinct peptides only
+# write output to file  ##################
+pep_metrics_enrich_report %>%
+  dplyr::select(peptide) %>%
+  distinct() %>%
+  write.table(., file = paste("/Users/zimm824/Documents/Previous_work/Proteomics_15N/WH7803_data/output/WH7803_PD_peptides_", format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, col.name = FALSE, sep = "\t")
+```
+
+
+<br/>
+
+***
+
+<br/>
+
+
+
+### Process output through classifier (QC filter 1)
+
+Process preliminary cPIE output through classifier model developed for Synechococcus WH7803 data (pure cultures grown on a series of increasing 15N-NO3) to reduce noisy and/or false positive data.  
+
+**Model01 has been revised to be search-algorithm independent (model01i) as of 21 May 2021. Apply this and the appropriate threshold to EndoPopulus proteomics data.**
+
+
+##### Apply classifier based on WH7803 data
+
+Use classifier to predict 'correct' tracer incorporation on object that has all appropriate features. 
+See script "HOT311_method-dev-isotope_IsoCorrectoR_2021-05-21_v8.Rmd" for more details.   
+  
+```{r load-model-files}
+## Model revised May 2021 to be search algorithm independent (designated by "i")
+## model01 is original classifier model 
+load(file = "/Users/zimm824/R/cPIE_prototype/ref/WH7803_models_2021.RData")
+
+#WH7803_model01 <- model01
+
+## Cut off values determined to control FPR at 0.15
+cutoff01_FPR15 <- 0.8200012
+cutoff01i_FPR15 <- 0.8205740
+
+# trainingset from WH7803 N15 experiments in Coleman lab at UChicago
+# calculated flag is a function of the min.relAb.se.lg10 + max.relAb.se.sqrt + mean.relAb.se.sqrt + wtmean.relAb.se.sqrt + mean.relAb.Rsq + wtmean.relAb.Rsq + min.residuals.abs.lg10 + max.residuals.abs + mean.residuals.abs + wtmean.residuals.abs + Intensity.lg10 + Num_spectra.lg10 + Mono_Mass + mean.Charge + TotalResidual
+```
+
+
+```{r prepare-data}
+## Prepare data
+# Compute atom%
+# Transform appropriate variables.
+
+pep_metrics_enrich_report_mod <- pep_metrics_enrich_report %>%
+  mutate(atomPct = 100*mean.enrichment,
+         Intensity.lg10 = log10(Intensity),
+         min.relAb.se.lg10 = log10(min.relAb.se), 
+         min.residuals.abs.lg10 = log10(min.residuals.abs + 1),
+         Num_spectra.lg10 = log10(Num_spectra), 
+         max.relAb.se.sqrt = sqrt(max.relAb.se), 
+         mean.relAb.se.sqrt = sqrt(mean.relAb.se), 
+         wtmean.relAb.se.sqrt = sqrt(wtmean.relAb.se))
+
+
+## Use model to predict probability of atom% 15N accuracy
+pep_metrics_enrich_report_mod <- pep_metrics_enrich_report_mod %>%
+  mutate(p01 = predict(model01i, newdata = ., type = "response"))
+```
+
+
+```{r filter-peptides}
+## Make a filter for "good" rows of data based on p
+## revise threshold for algorithm independent model
+pep_metrics_enrich_report_mod_filt01 <- pep_metrics_enrich_report_mod %>%
+  filter(!is.na(p01) & p01 > cutoff01i_FPR15)
+
+# write output to file  ##################
+#pep_metrics_enrich_report_mod_filt01 %>%
+#  dplyr::select(peptide) %>%
+#  distinct() %>%
+#  write.table(., file = paste("/Volumes/GoogleDrive/My Drive/UofC/Data_2019/HOT311_May2019/combined_expt/output/HOT311_15N_peptides_filt01_",format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, col.name = FALSE, sep = "\t")
+```
+
+
+
+
+##### Explore implications of classification filtering
+
+Check to see how individual samples and time points were effected.  
+```{r}
+## Make a table to compare effects of classifier models on data structure
+classifier_table_pre <- pep_metrics_enrich_report_mod %>% 
+  dplyr::select(Expt, Sample, Sequence, peptide) %>% 
+  group_by(Expt, Sample) %>% 
+  summarise(pre.obs = n(), pre.peps = n_distinct(peptide), pre.seqs = n_distinct(Sequence), .groups = "keep") %>% 
+  as.data.frame(.)
+
+classifier_table_mod01 <- pep_metrics_enrich_report_mod_filt01 %>% 
+  dplyr::select(Expt, Sample, Sequence, peptide) %>% 
+  group_by(Expt, Sample) %>% 
+  summarise(mod01.obs = n(), mod01.peps = n_distinct(peptide), mod01.seqs = n_distinct(Sequence), .groups = "keep") %>% 
+  as.data.frame(.)
+
+
+
+## Combine unfiltered and classifier filtered data into tables
+classifier_table_all <- classifier_table_pre %>%
+  left_join(., classifier_table_mod01, by = c("Expt", "Sample")) %>%
+  mutate(mod01.obs.Pct = (mod01.obs/pre.obs)*100, 
+         mod01.peps.Pct = (mod01.peps/pre.peps)*100, 
+         mod01.seqs.Pct = (mod01.seqs/pre.seqs)*100) %>%
+  dplyr::select(Expt, Sample, pre.obs, mod01.obs, mod01.obs.Pct, pre.peps, mod01.peps, mod01.peps.Pct, pre.seqs, mod01.seqs, mod01.seqs.Pct)
+
+psych::describe(classifier_table_all)
+```
+
+
+Visualize Total Residual variable by treatment
+
+```{r}
+library(ggsci)
+theme_set(theme_bw())
+
+par(mfrow = c(2,1))
+
+## Remember that Met Ox hasn't been resolved yet...
+## Export as 6x8 landscape (3x8 for 1 row)
+pep_metrics_enrich_report_mod %>%
+#pep_metrics_enrich_report_mod_filt01 %>%
+  mutate(Sample = as.character(Sample)) %>%
+  group_by(Sample) %>%
+  ggplot(aes(x = TotalResidual, y = mean.enrichment, fill = Sample, color = Sample), data = .) +
+  geom_point(shape=20, alpha = 0.5, size = 3) +
+  scale_fill_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+  scale_color_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+ # scale_fill_viridis(discrete = TRUE) +
+#  scale_color_viridis(discrete = TRUE) +
+  xlab("IsoCorrectoR calculated 'Total' Residual") +
+  ylab(expression(paste(""^{15}, "N mean enrichment"))) +
+ # scale_x_continuous(limits=c(0,3)) +
+ # ggtitle(paste("WH7803 benchmark 15N analysis: 25,193 observations of 8,258 WH7803 peptides (8,289 w/var MetOx)", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "PRIOR to filtering with classifier WH7803_model01i", "\n", "Searched with MSFragger/Philosopher (v5) min var mods")) + 
+  ggtitle(paste("WH7803 benchmark 15N analysis: 15,383 observations of 5,735 WH7803 peptides (5,755 w/var MetOx)", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with MSFragger/Philosopher (v5) min var mods")) + 
+  theme(plot.title = element_text(size = 10)) +
+  theme(panel.grid.minor = element_blank()) +
+  facet_wrap(~Sample, nrow = 1)
+```
+
+
+
+Plot filtered data; histograms.
+
+```{r}
+theme_set(theme_bw())
+
+## Export as 5x8 landscape
+pep_metrics_enrich_report_mod %>%
+pep_metrics_enrich_report_mod_filt01 %>%
+  mutate(Sample = as.character(Sample)) %>%
+  group_by(Sample) %>%
+  ggplot(aes(x=atomPct, fill=Sample), data = .) +
+  geom_hline(yintercept = 0, linetype="solid", color = "darkgray", size=0.3) +
+  geom_histogram(binwidth = 0.5, boundary = 0, closed = "left", position = "identity", alpha = 0.7, aes(y = ..count..)) +
+  scale_x_continuous(limits=c(-1,101), breaks=seq(0,100,20)) +
+  ylab("Frequency") +
+  xlab(expression(paste("Peptide", ""^{15}, "N enrichment (atom%)"))) +
+  scale_fill_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+  scale_color_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+#  ggtitle(paste("WH7803 benchmark 15N analysis: 30,290 observations of 7,980 WH7803 peptides", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "PRIOR to filtering with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) + 
+  ggtitle(paste("WH7803 benchmark 15N analysis: 18,639 observations of 5,780 WH7803 peptides", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) + 
+  theme(plot.title = element_text(size = 10)) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank()) #+
+  #facet_wrap(~Sample, nrow = 2)
+```
+
+
+Plot filtered data; density plots
+
+```{r}
+theme_set(theme_bw())
+
+## Export as 5x8 landscape
+pep_metrics_enrich_report_mod %>%
+pep_metrics_enrich_report_mod_filt01 %>%
+  mutate(Sample = as.character(Sample)) %>%
+  group_by(Sample) %>%
+  ggplot(aes(x=atomPct, fill=Sample, color=Sample), data = .) +
+  geom_hline(yintercept = 0, linetype="solid", color = "darkgray", size=0.3) +
+  geom_density(alpha = 0.5) +  
+  scale_x_continuous(limits=c(-1,101), breaks=seq(0,100,20)) +
+  ylab("Frequency") +
+  xlab(expression(paste("Peptide", ""^{15}, "N enrichment (atom%)"))) +
+  scale_fill_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+  scale_color_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("1", "2", "3", "4", "5", "6", "7", "8"), labels=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+#  ggtitle(paste("WH7803 benchmark 15N analysis: 30,290 observations of 7,980 WH7803 peptides", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "PRIOR to filtering with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) + 
+  ggtitle(paste("WH7803 benchmark 15N analysis: 18,639 observations of 5,780 WH7803 peptides", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) + 
+  theme(plot.title = element_text(size = 10)) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank()) +
+  facet_wrap(~Sample, nrow = 2)
+```
+
+
+
+
+
+<br/>
+
+***
+
+<br/>
+
+
+### Resolve variation in oxidized Met residues
+
+Oxidized methionine residues have been preserved up to this point as lower-case 'm' in Sequences.
+Want to de-replicate these peptides.
+
+Check to see how many Met-containing peptides are in the data set.  
+
+```{r}
+Met_metadat <- subset(metadat, grepl("[mM]", peptide))
+NonMet_metadat <- dplyr::anti_join(metadat, Met_metadat, by = "peptide")
+```
+
+
+Check how many peptides are found with Met is multiple oxidation states.
+
+```{r}
+## Note: Revised to use classifier-filtered data
+pep_metrics_enrich_report_mod_filt01_dups <- pep_metrics_enrich_report_mod_filt01 %>% 
+  group_by(peptide, Sample) %>% 
+  mutate(dupe = n() > 1) %>%
+  filter(dupe == "TRUE") %>%
+  arrange(peptide) %>%
+  ungroup()
+```
+
+Unnecessary to join total counts data to enrich_report object because "Intensity" variable is already computed and should be used to calculate weighted mean(mean.enrichment).  
+
+
+Compute weighted means for all peptides.
+*Note: Doesn't work with NAs in mean.enrichment.*
+
+```{r}
+pep_metrics_enrich_report_mod_filt01_derep <- pep_metrics_enrich_report_mod_filt01 %>%
+  mutate(Sample = as.character(Sample)) %>%
+  group_by(Expt, Sample, peptide) %>% 
+  summarise(mean.enrichment = weighted.mean(mean.enrichment, Intensity), 
+            atomPct = weighted.mean(atomPct, Intensity), 
+            n = n(), Intensity = sum(Intensity, na.rm = TRUE), 
+            Num_spectra = sum(Num_spectra, na.rm = TRUE), 
+            Total.Cor.relAb = sum(Total.Cor.relAb, na.rm = TRUE), 
+            Total.Obs.relAb = sum(Total.Obs.relAb, na.rm = TRUE), .groups = "keep") %>%
+  ungroup() %>%
+  mutate(TotalResidual = as.numeric(Total.Cor.relAb/Total.Obs.relAb)) %>%
+  mutate(treatment = as.factor(plyr::revalue(Sample, c("1" = "0", "2" = "1", "3" = "2", "4" = "5", "5" = "10", "6" = "20", "7" = "50", "8" = "100")))) %>%
+  as.data.frame(.)
+```
+
+
+Repeat resolution of oxidized methionine residues for non-classifier-filtered data:  
+
+```{r, eval=FALSE}
+pep_metrics_enrich_report_mod_derep <- pep_metrics_enrich_report_mod %>%
+  mutate(Sample = as.character(Sample)) %>%
+  group_by(Experiment, Sample, peptide) %>% 
+  summarise(mean.enrichment = weighted.mean(mean.enrichment, Intensity), 
+            atomPct = weighted.mean(atomPct, Intensity), 
+            n = n(), Intensity = sum(Intensity, na.rm = TRUE), 
+            Num_spectra = sum(Num_spectra, na.rm = TRUE), 
+            Total.Cor.relAb = sum(Total.Cor.relAb, na.rm = TRUE), 
+            Total.Obs.relAb = sum(Total.Obs.relAb, na.rm = TRUE), .groups = "keep") %>%
+  ungroup() %>%
+  mutate(TotalResidual = as.numeric(Total.Cor.relAb/Total.Obs.relAb)) %>%
+  mutate(treatment = as.factor(plyr::revalue(Sample, c("1" = "0", "2" = "1", "3" = "2", "4" = "5", "5" = "10", "6" = "20", "7" = "50", "8" = "100")))) %>%
+  as.data.frame(.)
+```
+
+
+
+<br/>
+
+***
+
+<br/>
+
+#### Visualize and analyze data
+
+
+
+```{r}
+########### write output to file
+write.table(pep_metrics_enrich_report_mod_filt01_derep, file = paste("/Users/zimm824/Documents/Projects/EndoPopulus/R/WH7803_benchmark_R/WH7803_PD20_filt01_derep_",format(Sys.time(), "%Y-%m-%d"),".txt", sep = ""), quote = FALSE, row.names = FALSE, col.name = TRUE, sep = "\t")
+```
+
+
+
+##### Standard plot theme
+
+```{r Plot-theme}
+theme_set(theme_bw())
+#theme_set(theme_classic())
+
+pubs <- theme_classic() +
+  theme(panel.border = element_rect(linetype = 1, fill = NA)) +
+#  theme(panel.grid.major = element_blank()) +
+  theme(axis.ticks = element_line(size = 0.5)) +
+  theme(plot.title = element_text(size = 10)) +
+  theme(axis.title = element_text(size=11)) +
+  theme(axis.text = element_text(size=10)) +
+  theme(axis.line = element_blank()) +
+  theme(legend.text = element_text(size = 9.5)) +
+  theme(plot.margin=unit(c(0,0.25,0,0.25), "cm")) +
+  # margin = top, right, bottom, left
+#  theme(panel.spacing=unit(c(0,0,0,0), "cm")) +
+  theme(legend.background = element_blank()) +
+  theme(legend.title = element_blank())
+theme_set(pubs)
+```
+
+<br/>
+
+##### Descriptive statistics:
+
+```{r}
+## Summarize global data (Hmisc package)
+summary(pep_metrics_enrich_report_mod_filt01_derep)
+describe(pep_metrics_enrich_report_mod_filt01_derep)
+```
+
+<br/>
+
+##### Peptide-Sample Matrix 
+
+Make a peptide-by-sample matrix and histogram
+
+```{r, eval=FALSE}
+##
+## Add presence/absence metric and name that include database
+## dereplicate data within each database
+## this collapses replicate bottles into one record
+## below works to generate one row per sample from ALL data! (presence/absence data)
+## distance based on presence/absence only, not actual mean.enrichment value!
+## remove sampleID and name rownames
+pep_samp_mat_samp <- pep_metrics_enrich_report_mod_filt01_derep %>% 
+  mutate(presence = 1) %>%
+  group_by(peptide, Sample) %>%
+  summarise(n = n(), reps = sum(presence), presence = mean(presence), N15.mean = mean(atomPct), N15.sd = sd(atomPct), .groups = "keep") %>% 
+  ungroup() %>%
+  dplyr::select(peptide, Sample, presence) %>%
+  spread(peptide, presence, fill=0) %>%
+  column_to_rownames(var="Sample") %>%
+  colSums(.) %>%
+  as.data.frame(.)
+
+names(pep_samp_mat_samp) <- c("samples")
+
+
+
+theme_set(theme_bw())
+
+## Generate histogram of num_spectra per peptide across all data
+## export as PDF, landscape, 6x8in
+## Unecessary to filter NAs because there shouldn't be any [filter(!is.na(mean.enrichment))]
+pep_samp_mat_samp %>%
+  ggplot(aes(x=samples), data = .) +
+  geom_hline(yintercept = 0, linetype="solid", color = "darkgray", size=0.3) +
+  geom_histogram(binwidth = 1, boundary = 0.5, position = "identity", closed = "left", alpha = 0.6, aes(y = ..count..), color="black", size = 0.25) +
+  geom_text(stat="count", aes(label=..count.., y = ..count..), vjust=-0.5, hjust=0.5, size=2, color="black") +
+ # scale_x_continuous(limits=c(-0.01,1.01), breaks=seq(0,1.00,0.20)) +
+  ylab("Frequency") +
+  xlab("Number of treatments per peptide") +
+  ggtitle(paste("WH7803 benchmark 15N Analysis: 5,780 peptides from 8 treatments", "   ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) +
+  theme(plot.title = element_text(size = 10)) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank())
+  
+```
+
+
+##### Treatment-Peptide Matrix 
+
+Make a treatment-peptide matrix and bar plot  
+
+```{r}
+## Export as 5 x 7
+pep_metrics_enrich_report_mod_filt01_derep %>% 
+  group_by(treatment) %>%
+  summarise(n=n(), n_pep = n_distinct(peptide), .groups = "drop") %>% 
+#  mutate(treatment = factor(treatment, levels = c("0", "1", "2", "5", "10", "20", "50", "100"))) %>%
+  mutate(pct = as.numeric(as.character(treatment))) %>%
+  ggplot(aes(x=pct, y=n_pep), data = .) + 
+  geom_hline(yintercept = 0, linetype="solid", color = "darkgray", size=0.3) +
+  geom_point(aes(color = treatment), shape = 19, alpha = 0.5, size = 2.5) +
+#  geom_bar(stat = "identity") + 
+  scale_fill_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("0", "1", "2", "5", "10", "20", "50", "100")) +
+  scale_color_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("0", "1", "2", "5", "10", "20", "50", "100")) +
+  geom_text(aes(label = n_pep), vjust=-0.7, hjust=0.5, size=2, color="black", ) +
+  xlab(expression("atom% "^15*"N-NO"[3]*"in media")) +
+  ylab("Peptides identified") + 
+  ggtitle(paste("WH7803 benchmark 15N Analysis: 5,780 peptides from 8 treatments", "   ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer")) +
+  theme(plot.title = element_text(size = 10)) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank()) +
+  theme(legend.position="none")
+
+```
+
+
+
+
+<br/>
+
+##### Box plots of enrichment (classifier-filtered) 
+
+```{r}
+treat_lev <- c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")
+
+
+## Actually plots data
+## Export plot as 6 x 10 landscape
+pep_metrics_enrich_report_mod_filt01_derep %>% 
+  mutate(TRMT = plyr::revalue(Sample, c("1"="0%", "2"="1%", "3"="2%", "4"="5%", "5"="10%", "6"="20%", "7"="50%", "8"="100%"))) %>%
+  mutate(treatment = factor(TRMT, levels = treat_lev)) %>%
+  ggplot(., aes(x = treatment, y = atomPct, fill = treatment, color = treatment)) + 
+  geom_hline(yintercept = 0, linetype="solid", color = "#3B3B3BFF", size=0.3) +
+  geom_boxplot(aes(color = treatment), position=position_dodge(1), outlier.shape  = NA, alpha = 0.3, lwd = 0.3) +
+  geom_jitter(shape = 1, position = position_jitterdodge(jitter.width = 0.1), alpha = 0.3) +
+#  geom_point(aes(color = treatment), shape = 19, position = position_jitterdodge(jitter.width = 0.05, dodge.width = 0.8), alpha = 0.3, size = 0.7) +
+#  stat_summary(aes(color = treatment), fun = median, fun.min = median, fun.max = median, geom = "crossbar", position=position_dodge(0.8), width = 0.8) + 
+  scale_fill_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+  scale_color_manual(values=c("#0D0887FF", "#4C02A1FF", "#7E03A8FF", "#A92395FF", "#CC4678FF", "#E56B5DFF", "#F89441FF", "#FDC328FF"), name  = paste("\n", "Series"), breaks=c("0%", "1%", "2%", "5%", "10%", "20%", "50%", "100%")) +
+  xlab("Treatment") +
+  ylab(expression(paste("Peptide", ""^{15}, "N enrichment (atom%)"))) +
+  ggtitle(paste("WH7803 benchmark 15N analysis: 5,780 WH7803 peptides", " ", format(Sys.time(), "%Y-%m-%d %H:%M"), "\n", "Filtered with classifier WH7803_model01i", "\n", "Searched with SEQUEST/ProteomeDiscoverer (max 20 var mods)")) + 
+#  scale_y_continuous(limits = c(-2, 4), breaks = c(-2,0,2,4), expand = expansion(mult = c(0.05, 0.05))) +
+#  scale_x_continuous(limits = c(0.5, 7.5), breaks = Pelagi_funct_plot_less$Xn, labels = Pelagi_funct_plot_less$funct_cat, expand = expansion(mult = c(0.01, 0.01))) + 
+  theme(legend.text = element_text(size=8), legend.title = element_text(size=10)) +
+  theme(legend.title = element_text(size=10)) +
+  theme(legend.position="none") +
+  theme(plot.title = element_text(size=8)) +
+  theme(axis.text.y = element_text(size=8, hjust = 1)) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, size=8)) +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank()) +
+  theme(panel.border = element_rect(linetype = 1, fill = NA, color = "black")) +
+  guides(fill = guide_legend(override.aes = list(size=1))) +
+  theme(strip.text.x = element_text(size = 8, angle = 0, hjust = 0.5)) + 
+  theme(strip.text.y = element_text(size = 8, angle = 0, hjust = 0)) +
+  geom_text(data = pep_metrics_enrich_report_mod_filt01_derep %>% mutate(TRMT = plyr::revalue(Sample, c("1"="0%", "2"="1%", "3"="2%", "4"="5%", "5"="10%", "6"="20%", "7"="50%", "8"="100%"))) %>% mutate(treatment = factor(TRMT, levels = treat_lev)) %>% group_by(treatment) %>% summarise(n_pep = n_distinct(peptide), .groups = "drop"), aes(x = treatment, label=n_pep, y = -3, fill = treatment), position=position_dodge(0.8), hjust=0.5, size=2, color = "#5d5d5d", show.legend=FALSE, inherit.aes = FALSE, alpha = 0.7)
+```
+
+
+
+
+<br/>
+
+
+***
+
+
+<br/>
+
+
+```{r}
+
+```
+

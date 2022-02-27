@@ -1,0 +1,6 @@
+Element,Isotope abundance_Mass shift,Tracer isotope mass shift,Tracer purity
+C,0.0_1/1.0_0,,
+H,0.0_1/1.0_0,,
+O,1.0_0/0.0_1/0.0_2,,
+N,1.0_0/0.0_1,1,0.98
+S,1.0_0/0.0_1/0.0_2/0.0_4,,

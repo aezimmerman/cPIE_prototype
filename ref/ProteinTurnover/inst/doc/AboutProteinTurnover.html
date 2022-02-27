@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+
+<title>Modeling the Relative Abundance</title>
+
+<script type="text/javascript">
+window.onload = function() {
+  var imgs = document.getElementsByTagName('img'), i, img;
+  for (i = 0; i < imgs.length; i++) {
+    img = imgs[i];
+    // center an image if it is the only element of its parent
+    if (img.parentElement.childElementCount === 1)
+      img.parentElement.style.textAlign = 'center';
+  }
+};
+</script>
+
+
+
+<!-- MathJax scripts -->
+<script type="text/javascript" src="https://cdn.bootcss.com/mathjax/2.7.0/MathJax.js?config=TeX-MML-AM_CHTML">
+</script>
+
+
+<style type="text/css">
+body, td {
+   font-family: sans-serif;
+   background-color: white;
+   font-size: 13px;
+}
+
+body {
+  max-width: 800px;
+  margin: auto;
+  padding: 1em;
+  line-height: 20px;
+}
+
+tt, code, pre {
+   font-family: 'DejaVu Sans Mono', 'Droid Sans Mono', 'Lucida Console', Consolas, Monaco, monospace;
+}
+
+h1 {
+   font-size:2.2em;
+}
+
+h2 {
+   font-size:1.8em;
+}
+
+h3 {
+   font-size:1.4em;
+}
+
+h4 {
+   font-size:1.0em;
+}
+
+h5 {
+   font-size:0.9em;
+}
+
+h6 {
+   font-size:0.8em;
+}
+
+a:visited {
+   color: rgb(50%, 0%, 50%);
+}
+
+pre, img {
+  max-width: 100%;
+}
+pre {
+  overflow-x: auto;
+}
+pre code {
+   display: block; padding: 0.5em;
+}
+
+code {
+  font-size: 92%;
+  border: 1px solid #ccc;
+}
+
+code[class] {
+  background-color: #F8F8F8;
+}
+
+table, td, th {
+  border: none;
+}
+
+blockquote {
+   color:#666666;
+   margin:0;
+   padding-left: 1em;
+   border-left: 0.5em #EEE solid;
+}
+
+hr {
+   height: 0px;
+   border-bottom: none;
+   border-top-width: thin;
+   border-top-style: dotted;
+   border-top-color: #999999;
+}
+
+@media print {
+   * {
+      background: transparent !important;
+      color: black !important;
+      filter:none !important;
+      -ms-filter: none !important;
+   }
+
+   body {
+      font-size:12pt;
+      max-width:100%;
+   }
+
+   a, a:visited {
+      text-decoration: underline;
+   }
+
+   hr {
+      visibility: hidden;
+      page-break-before: always;
+   }
+
+   pre, blockquote {
+      padding-right: 1em;
+      page-break-inside: avoid;
+   }
+
+   tr, img {
+      page-break-inside: avoid;
+   }
+
+   img {
+      max-width: 100% !important;
+   }
+
+   @page :left {
+      margin: 15mm 20mm 15mm 10mm;
+   }
+
+   @page :right {
+      margin: 15mm 10mm 15mm 20mm;
+   }
+
+   p, h2, h3 {
+      orphans: 3; widows: 3;
+   }
+
+   h2, h3 {
+      page-break-after: avoid;
+   }
+}
+</style>
+
+
+
+</head>
+
+<body>
+<h2>Modeling the Relative Abundance</h2>
+
+<h3>The binomial model</h3>
+
+<p>Consider a single peptide with \(n\) atoms of a given element which has two possible isotopes, one with standard mass number and the other with one extra neutron. Let the probability of having one extra neutron (the abundance of the isotope) be \(p\). The total number of extra neutrons \(k\) in these \(n\) atoms then follows a binomial distribution, Bin(\(n\), \(p\)), where \(Pr(k ; n, p) = {n \choose k} p^k (1-p)^{n-k}\).</p>
+
+<p>In our experiments, we are modifying the abundance of the additional isotope by either incorporation or dilution, and want to estimate the changes in \(p\) over time. At any particular time point \(t\), we allow for three possibilities for the abundance, with these probabilities:</p>
+
+<ul>
+<li>natural abundance, with probability \(\alpha_t\),</li>
+<li>estimated abundance at time 0, \(\pi_0\), with probability \((1-r_t) (1-\alpha_t)\),</li>
+<li>estimated abundance at time t, \(\pi_t\), with probability \(r_t (1-\alpha_t)\).</li>
+</ul>
+
+<p>For different situations, we can fix certain of these parameters, set them equal to each other, or define them using some other set parameters. For example, for incorporation, we know we have only natural abundance at time 0, so \(\alpha_0=1\), \(\pi_0=0\), and \(r_t=1\) for all \(t\). Or we might choose to let \(\alpha_t\) change exponentially as a function of \(t\).</p>
+
+<h3>The beta-binomial model</h3>
+
+<p>In practice, the distribution of the abundance at a given time point can be more spread out than a binomial model would predict, so we also allow the number of extra neutrons to be models with a beta-binomial model, which has an additional parameter \(M\) to allow for this extra spread. It can be thought of as a binomial distribution where the probability is random and follows a Beta(\(Mp\), \(M(1-p)\)) distribution, which is centered at \(p\), falls between 0 and 1, and has variance \(p(1-p) / (M + 1)\), so as \(M\) approaches infinity, the variance of the underlying Beta distribution approaches zero and the distribution of the beta-binomial approaches that of a binomial.</p>
+
+<p>The probability mass formula for the beta-binomial is 
+\(Pr(k ; n, p, M) = {n \choose k} \frac{B(Mp+k, M(1-p)+N-k)}{B(Mp, M(1-p)))}\).</p>
+
+<p>This \(M\) parameter can be set to either differ across the timepoints or be the same across all time points. Other possibilities can be programmed as well.</p>
+
+<h3>Combining with other elements</h3>
+
+<p>We started by considering only \(n\) atoms of a given element within a peptide, but a peptide also has other elements which may be isotopes with extra neutrons. These other elements will vary only due to their natural abundance, but since we cannot distinguish which element extra atomic mass comes from, we need to model these other elements as well.</p>
+
+<p>To do so, we convolve the probabilities for each other atom together. This simply means to add up the probabilities of each possibility for each element. Consider the case of two atoms, and let \(C_1\) and \(C_2\) be the number of additional neutrons in each and \(n\) be the maximum value across \(C_1\) and \(C_2\). Then the convolved probability for them together equalling \(k\) is</p>
+
+<p>\(P(C_1 + C_2 = k) = \sum_{i=0}^{k} P(C_1=i)\times P(C_2=(k-i))\).</p>
+
+<p>For additional atoms, we simply convolve them together with the previous result.</p>
+
+<p>In practice, since the natural abundance is each element is known, we initially calculate the overall probabilities of the other elements due to natural abundance, and then convolve this with the estimated probabilities for the element of interest.</p>
+
+<h3>Fitting using a multinomial likelihood</h3>
+
+<p>Now consider multiple peptides, and suppose that for each we are able to measure the total number of extra neutrons at each timepoint. We could then count how many peptides have each possible number of extra neutrons, and consider this as a multinomial variable. A multinomial variable is similar to a binomial variable, except that there can be more than two outcomes. In this case, the possible outcomes are the possible number of extra peptides. Let \(i\) extra neutrons occur with probability \(p_i\), for \(i=0, &hellip;, n\). Assuming these are known, the probability of observing \(i\) neutrons \(k_i\) times is
+\[P(k_0,&hellip;,k_n; p_0, &hellip; p_n) = {n \choose k_0, k_1, &hellip;, k_n}p_0^{k_0}\cdots p_n^{k_n}.\]</p>
+
+<p>This is a full model that describes the data perfectly; it has \(n+1\) parameters for each timepoint, \(p_0\) to \(p_n\), and these can be defined using the observed proportions in the data.</p>
+
+<p>Our model, described previously, also defines the probability of observing extra neutrons, but does so using less parameters. To find the best values for these parameters for a given data set, we use the idea of likelihood. This idea says that the parameters that give the best fit are those that result in the highest probability of observing the data that we actually observed, so in the probability function above, we now consider it to be a function of the parameters (the \(p_i\)&#39;s) given the data (the \(k_i\)&#39;s),</p>
+
+<p>We write these \(p_i\) parameters in terms of the fewer parameters defined above (\(\alpha_t\), \(r_t\), and \(\pi_t\), for each timepoint \(t\)), or even in terms of fewer parameters yet, which we will write in generality using \(\theta\), so the likelihood function becomes
+\[L(\theta ; k_0,&hellip;,k_n) = {n \choose k_0, k_1, &hellip;, k_n}p_0^{k_0}\cdots p_n^{k_n}.\]</p>
+
+<p>In practice, we notice that the combination does not depend on any of the parameters, and also that the maximization would give the same result after a log transformation, so we actually work on the log-likelihood function (ignoring the constant from the combination),
+\[l(\theta ; k_0,&hellip;,k_n) = \sum_{i=0}^n k_ilog(p_i),\]
+where again, the \(p_i\)&#39;s are a function of (\(\alpha_t\), \(r_t\), and \(\pi_t\), for each timepoint \(t\) as defined earlier, which are a function of \(\theta\) as needed for a particular application.</p>
+
+<h3>The quasi-multinomial distribution</h3>
+
+<p>However, we cannot actually measure the total number of extra neutrons at each timepoint. Instead, for each timepoint, we start with data that has the proportion of counts for each possible number of extra neutrons; we now call these channels. </p>
+
+<p>This is almost multinomial data; but instead of a given number of total counts which are randomly distributed among the channels, we only observe the proportion that are distributed to each channel. So we instead consider the data to be from a &ldquo;quasi-multinomial&rdquo; distribution, which allows the data to be probabilities instead of counts.</p>
+
+<p>In addition to allowing for probabilities, there is another benefit to considering the data as quasi-multinomial; for a multinomial variable, the variability of the data around the true probability would be determined by the total counts; similarly to the binomial distribution, the variance would be \(n p_i (1-p_i)\). Since \(n\) is unknown, this model allows the variance to be \(\phi p_i (1-p_i)\) where \(\phi\) is an additional parameter to be estimated from the data.</p>
+
+<p>A final benefit of this quasi-binomial model is that the fitting can be done using the likelihood from the usual multinomial, as described above, because the quasi-multinomial simply scales the variance so the &ldquo;best fit&rdquo; is same, all that will changes is the measures of precision about that fit.</p>
+
+<h3>Assessing the quasi-multinomial fit</h3>
+
+<p>We consider three ways to assess how well a quasi-multinomial model fits, an \(R^2\) based on the deviance, a variance measure based on Pearson&#39;s residuals, and a measure that attempts to capture the visual difference. </p>
+
+<p>These measures are based on the observed data (obs), the predicted values from the model (exp), and the predictions from a null model (null), which is simply within each timepoint, each channel is equally likely. \(N\) is the total number of observations, and the degrees of freedom from the fit \(df_{fit}\) are \(N\) minus the number of parameters in the model, and the degrees of freedom from the null model \(df_{null}\) are \(N\) minus the number of days.</p>
+
+<h4>Deviance measures</h4>
+
+<p>There is not a true \(R^2\) for models like this, but a commonly used psuedo-\(R^2\) is from Nagelkerke.</p>
+
+<ul>
+<li>full model deviance: \(D_{full} = -2\sum(obs\times\log(obs)))\)</li>
+<li>fit deviance: \(D_{fit} = -2\sum(obs\times\log(exp)) - D_{full}\)</li>
+<li>null deviance: \(D_0 = -2\sum(obs\times\log(null)) - D_{full}\)</li>
+<li>Nagelkerke \(R^2 = 1-\frac{\exp((D_{fit}-D_0)/N))}{(1-\exp(-D_0/N))}\)</li>
+</ul>
+
+<h4>Pearson measures</h4>
+
+<ul>
+<li>Pearson residuals \(r_{P} = (obs - exp)/\sqrt{exp}\)</li>
+<li>\(X^2 = \sum r_P^2\)</li>
+<li>\(\sigma^2 = X^2/df_{fit}\)</li>
+</ul>
+
+<h4>Visual score</h4>
+
+<p>This attempts to measure how close the fitted values are visually to the observed data. It is the ratio of the total difference between the fitted and observed values to the total observed values, \((1 - \sum(|exp-obs|)/\sum(obs))\times 100\). This is computed for each timepoint separately, and the timepoint results are averaged for an overall result.</p>
+
+</body>
+
+</html>
